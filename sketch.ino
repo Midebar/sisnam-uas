@@ -126,9 +126,11 @@ typedef struct {
 SystemState currentState;
 SemaphoreHandle_t xMutex;
 
+// // TEST
 // IVMSPacket IVMSOut;
 // SADDMSPacket SADDMSOut;
 // STACSPacket STACSOut;
+
 TaskHandle_t displayTaskHandle = NULL;
 
 // For wokwi simulation
@@ -184,7 +186,7 @@ void TaskDisplayMain (void *pvParameters) {
   // Local var
   (void) pvParameters;
 
-  int type = 1; // 1=IVMs | 2=SADDMS | 3=STACS
+  int type = 0; // 1=IVMs | 2=SADDMS | 3=STACS
   int lastReceivedType = 0;
   SystemState localCopy;
   char tsAsChar[9];
@@ -289,38 +291,37 @@ void TaskDisplayMain (void *pvParameters) {
           lcd.setCursor(0, 1);
           lcd.print("Last:");
           char tempLongRow[64];
-          strcpy(tempLongRow, longRow);
           switch (lastReceivedType) {
             case 1:
               snprintf(
-                longRow, sizeof(longRow),
+                tempLongRow, sizeof(tempLongRow),
                 "IVMS | %s",
-                tempLongRow
+                longRow
               );
               break;
             case 2:
               snprintf(
-                longRow, sizeof(longRow),
+                tempLongRow, sizeof(tempLongRow),
                 "SADDMS | %s",
-                tempLongRow
+                longRow
               );
               break;
             case 3:
               snprintf(
-                longRow, sizeof(longRow),
+                tempLongRow, sizeof(tempLongRow),
                 "STACS | %s",
-                tempLongRow
+                longRow
               );
               break;
             default:
               strcpy(
-                longRow,
+                tempLongRow,
                 "Unknown Pointer Error"
               );
               break;
           }
 
-          scrollText(longRow, 5, 1, 11, 150);
+          scrollText(tempLongRow, 5, 1, 11, 100);
         }
         
         break;
@@ -352,6 +353,7 @@ void setup() {
 
   esp_now_register_recv_cb(OnDataRecv);
 
+  // // TEST
   // // Add self as peer
   // esp_now_peer_info_t peerInfo = {};
   // memcpy(peerInfo.peer_addr, selfMac, 6);
@@ -396,6 +398,7 @@ void setup() {
 }
 
 void loop() {
+  // // TEST
   // delay(4267);
 
   // // Mockup T7-K2: Intelligent Visitor Management System (IVMS)
