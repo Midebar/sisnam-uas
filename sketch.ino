@@ -57,7 +57,7 @@ void initLCD() {
   delay(500);
 }
 
-void scrollText(const char* text, int col = 0, int row = 0, int maxLen = 16, int scrollDelay = 70) {
+void scrollText(const char* text, int col = 0, int row = 0, int maxLen = 16, int scrollDelay = 150) {
   int len = strlen(text);
   if (len <= maxLen) {
     lcd.setCursor(col, row);
@@ -91,45 +91,70 @@ void scrollText(const char* text, int col = 0, int row = 0, int maxLen = 16, int
   vTaskDelay(pdMS_TO_TICKS(scrollDelay));
 }
 
-void formatTime(char* out, uint32_t ts_ms, size_t len) {
-  uint32_t sec = ts_ms / 1000;
-  uint32_t min = sec / 60;
-  uint32_t hour = min / 60;
+void setupTimeUTC() {
+  configTime(3600*7, 0, "pool.ntp.org", "time.nist.gov");
+
+  Serial.print("Syncing time");
+  time_t now;
+
+  while (true) {
+    time(&now);
+    if (now > 1767225600) {   // ~2023+
+      break;
+    }
+    Serial.print(".");
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+
+  Serial.println("\nTime synced (UTC)");
+}
+
+uint64_t getTime() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return ((uint64_t)tv.tv_sec + 3600 * 7) * 1000LL + (tv.tv_usec / 1000);
+}
+
+void formatTime(char* out, uint64_t ts_ms, size_t len) {
+  uint64_t sec = ts_ms / 1000;
+  uint64_t min = sec / 60;
+  uint64_t hour = min / 60;
 
   sec %= 60;
   min %= 60;
   hour %= 24;
 
-  snprintf(out, len, "%02lu:%02lu:%02lu", hour, min, sec);
+  snprintf(out, len, "%02llu:%02llu:%02llu", hour, min, sec);
 }
 
 // ===== Global =====
 typedef struct {
   // T7-K2: Intelligent Visitor Management System (IVMS)
   char card_event[8];
-  uint32_t ts_card;   // Last entry time (UTC Time)
+  uint64_t ts_card;   // Last entry time (UTC Time)
   int32_t duration;   // Stay duration
   char place[8];      // Last entry location
 
   // T8-K5: Smart Automated Door & Distance Monitoring System (SAD-DMS)
   char dist_event[7];
   float distance_cm;
-  uint32_t ts_dist;   // Last entry time millis()
+  uint64_t ts_dist;   // Last entry time millis()
   
   // T9-K11: Smart Touchless Access Control System (STACS)
   char hand_event[20];
   int total_akses;
-  uint32_t ts_hand;   // Last entry time millis()
+  uint64_t ts_hand;   // Last entry time millis()
 
 } SystemState;
 
 SystemState currentState;
 SemaphoreHandle_t xMutex;
 
-// // TEST
+// // ===== TEST =====
 // IVMSPacket IVMSOut;
 // SADDMSPacket SADDMSOut;
 // STACSPacket STACSOut;
+// // ===== END TEST =====
 
 TaskHandle_t displayTaskHandle = NULL;
 
@@ -137,7 +162,30 @@ TaskHandle_t displayTaskHandle = NULL;
 uint8_t selfMac[6];
 
 // ===== RUNTIME HELPER FUNCTIONS =====
+
+// // ===== TEST =====
+// void safe_esp_now_send(const uint8_t *peer_addr, const uint8_t *data, size_t len) {
+//     // Check if the destination MAC matches our own MAC
+//     bool isSelf = true;
+//     for(int i = 0; i < 6; i++) {
+//         if(peer_addr[i] != selfMac[i]) {
+//             isSelf = false;
+//             break;
+//         }
+//     }
+
+//     if (isSelf) {
+//         // Bypass the radio and call the receiver function directly
+//         OnDataRecv(NULL, data, len); 
+//     } else {
+//         // Send over the actual airwaves
+//         esp_now_send(peer_addr, data, len);
+//     }
+// }
+// // ===== END TEST =====
+
 void OnDataRecv(const esp_now_recv_info *mac, const uint8_t *incomingData, int len) {
+  Serial.println(len);
   displayInterrupt = true;
   if (displayTaskHandle != NULL) {
     xTaskNotifyGive(displayTaskHandle);
@@ -149,7 +197,7 @@ void OnDataRecv(const esp_now_recv_info *mac, const uint8_t *incomingData, int l
     if (incoming.isLoopReport == 0) { // only grab when it's an instant notification
       if (xSemaphoreTake(xMutex, 0) == pdTRUE) {
         strcpy(currentState.card_event, incoming.card_event);
-        currentState.ts_card = incoming.utc_time * 1000; // UTC-time is in seconds, want ms
+        currentState.ts_card = getTime(); // UTC-time is in seconds, want ms
         currentState.duration = incoming.duration;
         strcpy(currentState.place, incoming.place);
         xSemaphoreGive(xMutex);
@@ -162,7 +210,7 @@ void OnDataRecv(const esp_now_recv_info *mac, const uint8_t *incomingData, int l
     if (xSemaphoreTake(xMutex, 0) == pdTRUE) {
       strcpy(currentState.dist_event, incoming.dist_event);
       currentState.distance_cm = incoming.distance_cm;
-      currentState.ts_dist = incoming.ts_dist;
+      currentState.ts_dist = getTime();
       xSemaphoreGive(xMutex);
     }
 
@@ -172,7 +220,7 @@ void OnDataRecv(const esp_now_recv_info *mac, const uint8_t *incomingData, int l
     if (xSemaphoreTake(xMutex, 0) == pdTRUE) {
       strcpy(currentState.hand_event, incoming.hand_event);
       currentState.total_akses = incoming.total_akses;
-      currentState.ts_hand = millis();
+      currentState.ts_hand = getTime();
       xSemaphoreGive(xMutex);
     }
 
@@ -191,6 +239,8 @@ void TaskDisplayMain (void *pvParameters) {
   SystemState localCopy;
   char tsAsChar[9];
   char longRow[64];    // long on purpose (for scrolling)
+
+  localCopy = currentState; // initial
 
   for (;;) {
     displayInterrupt = false;
@@ -345,15 +395,55 @@ void setup() {
   // Init LCD
   initLCD();
 
+  // Sync Time
+  WiFi.begin("AdkA55", "boukendabouken");
+  
+  // unsigned long startAttempt = millis();
+  // while ((WiFi.status() != WL_CONNECTED) && ((millis() - startAttempt) < 10000)) {
+  //   delay(500);
+  //   lcd.setCursor(0, 0);
+  //   lcd.print("Connecting WIFI ");
+  // }
+
+  // if (WiFi.status() != WL_CONNECTED) {
+  //   // OFFLINE: Force clock to 0
+  //   struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+  //   settimeofday(&tv, NULL);
+  //   Serial.println("NTP Failed: Time set to 00:00:00");
+  // } else {
+  //   // ONLINE: Sync with NTP
+  //   lcd.setCursor(0, 0);
+  //   lcd.print("Syncing Time... ");
+  //   setupTimeUTC();
+  //   WiFi.disconnect(true);
+  // }
+
+  // Sync Time
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to WiFi");
+
+  setupTimeUTC();
+  setenv("TZ", "WIB-7", 1);
+  tzset();
+
+  WiFi.disconnect(true);
+  Serial.println("Wifi disconnected!");
+  
+  WiFi.mode(WIFI_STA);
+  delay(500);
+
   // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed");
     return;
   }
 
-  esp_now_register_recv_cb(OnDataRecv);
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
 
-  // // TEST
+  // // ===== TEST =====
   // // Add self as peer
   // esp_now_peer_info_t peerInfo = {};
   // memcpy(peerInfo.peer_addr, selfMac, 6);
@@ -364,6 +454,7 @@ void setup() {
   //   Serial.println("Failed to add self as peer");
   //   return;
   // }
+  // // ===== END TEST =====
 
   // Default Global State
   // T7-K2: Intelligent Visitor Management System (IVMS)
@@ -398,7 +489,7 @@ void setup() {
 }
 
 void loop() {
-  // // TEST
+  // // ===== TEST =====
   // delay(4267);
 
   // // Mockup T7-K2: Intelligent Visitor Management System (IVMS)
@@ -410,7 +501,7 @@ void loop() {
   // IVMSOut.isLoopReport = 0;              // instant notification
   // IVMSOut.duration = currentState.duration + 1;
 
-  // esp_now_send(selfMac, (uint8_t*)&IVMSOut, sizeof(IVMSOut));
+  // safe_esp_now_send(selfMac, (uint8_t*)&IVMSOut, sizeof(IVMSOut));
   // delay(4267);
    
   // // Mockup T8-K5: Smart Automated Door & Distance Monitoring System (SAD-DMS)
@@ -419,7 +510,7 @@ void loop() {
   // SADDMSOut.dist_code = (strcmp(SADDMSOut.dist_event, "OPEN") == 0) ? 1 : 2; // 0=none, 1=OPENED, 2=CLOSED
   // SADDMSOut.ts_dist = millis();  // timestamp = millis()
 
-  // esp_now_send(selfMac, (uint8_t*)&SADDMSOut, sizeof(SADDMSOut));
+  // safe_esp_now_send(selfMac, (uint8_t*)&SADDMSOut, sizeof(SADDMSOut));
   // delay(4267);
 
   // // Mockup T9-K11: Smart Touchless Access Control System (STACS)
@@ -427,5 +518,6 @@ void loop() {
   // strcpy(STACSOut.hand_event, (strcmp(currentState.hand_event, "OPEN") == 0) ? "CLOSED" : "OPEN");
   // STACSOut.total_akses = currentState.total_akses + 1;  // X times the door has been opened
   
-  // esp_now_send(selfMac, (uint8_t*)&STACSOut, sizeof(STACSOut));
+  // safe_esp_now_send(selfMac, (uint8_t*)&STACSOut, sizeof(STACSOut));
+  // // ===== END TEST =====
 }
